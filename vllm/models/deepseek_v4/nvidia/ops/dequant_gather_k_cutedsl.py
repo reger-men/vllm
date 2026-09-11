@@ -11,10 +11,7 @@ from cutlass import BFloat16, Int32, Uint8, Uint32
 from cutlass.cute.nvgpu import cpasync
 from quack.compile_utils import make_fake_tensor
 
-from vllm.models.deepseek_v4.nvidia.ops.cutedsl_utils import (
-    _bf16x2_mul,
-    _fp8x4_to_bf16x4,
-)
+from vllm.cute_utils import _bf16x2_mul, cvt
 
 
 def dequantize_and_gather_k_cache_cutedsl(
@@ -76,7 +73,12 @@ class DequantGatherKCacheKernel:
             ),
         )
 
-        grid = (out.shape[0], 1024, 1)
+        num_reqs = out.shape[0]
+        max_rows = out.shape[1] - offset
+        num_workers = cutlass.max(
+            1, cutlass.min(cute.ceil_div(max_rows, 4), cute.ceil_div(8192, num_reqs))
+        )
+        grid = (num_reqs, num_workers, 1)
         self.kernel(
             out,
             k_data,
@@ -268,8 +270,8 @@ class DequantGatherKCacheKernel:
             dequant0 = cute.make_rmem_tensor(4, Uint32)
             dequant1 = cute.make_rmem_tensor(4, Uint32)
             for j in cutlass.range_constexpr(2):
-                tmp0 = _fp8x4_to_bf16x4(data0[j])
-                tmp1 = _fp8x4_to_bf16x4(data1[j])
+                tmp0 = cvt.fp8x4_to_bf16x4(data0[j])
+                tmp1 = cvt.fp8x4_to_bf16x4(data1[j])
 
                 # BF16 multiply is safe because the scales are exact powers of 2.
                 dequant0[j * 2] = _bf16x2_mul(tmp0[0], scale0_bf16x2)
